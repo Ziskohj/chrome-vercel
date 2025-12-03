@@ -1,11 +1,10 @@
-
 export default async function handler(req, res) {
     const { url } = req.query;
     
     if (!url) {
         return res.status(400).send("Missing url parameter");
     }
-
+    
     // CORS para Chromecast
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
@@ -14,7 +13,7 @@ export default async function handler(req, res) {
     if (req.method === "OPTIONS") {
         return res.status(200).end();
     }
-
+    
     try {
         const targetUrl = decodeURIComponent(url);
         const headers = {};
@@ -23,15 +22,16 @@ export default async function handler(req, res) {
         if (req.headers.range) {
             headers.Range = req.headers.range;
         }
-
+        
         const response = await fetch(targetUrl, { headers });
         
         if (!response.ok) {
             return res.status(response.status).send("Upstream error");
         }
-
+        
         // Copiar headers relevantes
         res.setHeader("Content-Type", "video/mp2t");
+        
         if (response.headers.get("content-length")) {
             res.setHeader("Content-Length", response.headers.get("content-length"));
         }
@@ -41,9 +41,19 @@ export default async function handler(req, res) {
         if (response.headers.get("accept-ranges")) {
             res.setHeader("Accept-Ranges", response.headers.get("accept-ranges"));
         }
-
+        
         res.status(response.status);
-        response.body.pipe(res);
+        
+        // Stream del contenido
+        const reader = response.body.getReader();
+        
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(value);
+        }
+        
+        res.end();
         
     } catch (error) {
         res.status(500).send("Proxy error: " + error.message);
