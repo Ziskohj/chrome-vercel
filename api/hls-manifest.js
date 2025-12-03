@@ -14,17 +14,43 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
     
-    const proxyURL = `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(url)}`;
-    
-    // Generar manifest HLS simple
-    const manifest = `#EXTM3U
-#EXT-X-VERSION:3
-#EXT-X-TARGETDURATION:10
-#EXT-X-MEDIA-SEQUENCE:0
-#EXTINF:10.0,
-${proxyURL}
-#EXT-X-ENDLIST`;
-    
-    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-    res.status(200).send(manifest);
+    try {
+        const targetUrl = decodeURIComponent(url);
+        
+        // Convertir .ts a .m3u8 si es necesario
+        const m3u8Url = targetUrl.replace(/\.ts$/, '.m3u8');
+        
+        const response = await fetch(m3u8Url);
+        
+        if (!response.ok) {
+            return res.status(response.status).send("Failed to fetch manifest");
+        }
+        
+        let manifestContent = await response.text();
+        
+        // Reescribir URLs en el manifest para que pasen por nuestro proxy
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+        
+        manifestContent = manifestContent.split('\n').map(line => {
+            if (line && !line.startsWith('#')) {
+                // Es una URL de segmento
+                let segmentUrl = line.trim();
+                
+                // Si es relativa, hacerla absoluta
+                if (!segmentUrl.startsWith('http')) {
+                    segmentUrl = baseUrl + segmentUrl;
+                }
+                
+                // Proxear a través de cast-proxy
+                return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
+            }
+            return line;
+        }).join('\n');
+        
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.status(200).send(manifestContent);
+        
+    } catch (error) {
+        res.status(500).send("Manifest proxy error: " + error.message);
+    }
 }
