@@ -5,11 +5,10 @@ export default async function handler(req, res) {
         return res.status(400).send("Missing url parameter");
     }
     
-    // CORS completo
+    // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "*");
-    res.setHeader("Access-Control-Expose-Headers", "*");
     
     if (req.method === "OPTIONS") {
         return res.status(200).end();
@@ -19,17 +18,32 @@ export default async function handler(req, res) {
         const targetUrl = decodeURIComponent(url);
         const m3u8Url = targetUrl.replace(/\.ts$/, '.m3u8');
         
-        const response = await fetch(m3u8Url);
+        const response = await fetch(m3u8Url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Referer': 'http://98sdfnjjjsi21.online/'
+            }
+        });
         
         if (!response.ok) {
             return res.status(response.status).send("Failed to fetch manifest");
         }
         
-        const manifestContent = await response.text();
+        let manifestContent = await response.text();
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
         
-        // NO reescribir URLs - pasar manifest original con CORS
+        manifestContent = manifestContent.split('\n').map(line => {
+            if (line && !line.startsWith('#')) {
+                let segmentUrl = line.trim();
+                if (!segmentUrl.startsWith('http')) {
+                    segmentUrl = baseUrl + segmentUrl;
+                }
+                return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
+            }
+            return line;
+        }).join('\n');
+        
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.status(200).send(manifestContent);
         
     } catch (error) {
