@@ -5,10 +5,11 @@ export default async function handler(req, res) {
         return res.status(400).send("Missing url parameter");
     }
     
-    // CORS
+    // CORS completo
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "*");
+    res.setHeader("Access-Control-Expose-Headers", "*");
     
     if (req.method === "OPTIONS") {
         return res.status(200).end();
@@ -16,8 +17,6 @@ export default async function handler(req, res) {
     
     try {
         const targetUrl = decodeURIComponent(url);
-        
-        // Convertir .ts a .m3u8 si es necesario
         const m3u8Url = targetUrl.replace(/\.ts$/, '.m3u8');
         
         const response = await fetch(m3u8Url);
@@ -26,31 +25,14 @@ export default async function handler(req, res) {
             return res.status(response.status).send("Failed to fetch manifest");
         }
         
-        let manifestContent = await response.text();
+        const manifestContent = await response.text();
         
-        // Reescribir URLs en el manifest para que pasen por nuestro proxy
-        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
-        
-        manifestContent = manifestContent.split('\n').map(line => {
-            if (line && !line.startsWith('#')) {
-                // Es una URL de segmento
-                let segmentUrl = line.trim();
-                
-                // Si es relativa, hacerla absoluta
-                if (!segmentUrl.startsWith('http')) {
-                    segmentUrl = baseUrl + segmentUrl;
-                }
-                
-                // Proxear a través de cast-proxy
-                return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
-            }
-            return line;
-        }).join('\n');
-        
+        // NO reescribir URLs - pasar manifest original con CORS
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
         res.status(200).send(manifestContent);
         
     } catch (error) {
-        res.status(500).send("Manifest proxy error: " + error.message);
+        res.status(500).send("Manifest error: " + error.message);
     }
 }
