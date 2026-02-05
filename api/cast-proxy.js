@@ -16,9 +16,12 @@ export default async function handler(req, res) {
     
     try {
         const targetUrl = decodeURIComponent(url);
+        
+        // NOTA: Si quieres que funcione con OTRAS webs, quizás debas quitar este Referer
+        // o hacerlo dinámico, pero para tu IPTV déjalo así.
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'http://98sdfnjjjsi21.online/'
+            'Referer': 'http://98sdfnjjjsi21.online/' 
         };
         
         if (req.headers.range) {
@@ -31,7 +34,16 @@ export default async function handler(req, res) {
             return res.status(response.status).send("Upstream error");
         }
         
-        res.setHeader("Content-Type", "video/mp2t");
+        // --- CAMBIO IMPORTANTE AQUÍ ---
+        // En lugar de forzar video/mp2t, pasamos el tipo real (mp4, mkv, etc.)
+        const contentType = response.headers.get("content-type");
+        if (contentType) {
+             res.setHeader("Content-Type", contentType);
+        } else {
+             // Solo si no viene nada, asumimos stream
+             res.setHeader("Content-Type", "video/mp2t");
+        }
+        // ------------------------------
         
         if (response.headers.get("content-length")) {
             res.setHeader("Content-Length", response.headers.get("content-length"));
