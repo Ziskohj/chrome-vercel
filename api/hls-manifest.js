@@ -45,7 +45,7 @@ export default async function handler(req, res) {
             let segmentUrl = trimmed;
             
             if (segmentUrl.startsWith('http://') || segmentUrl.startsWith('https://')) {
-                // Absoluta
+                // Ya es absoluta
             } else if (segmentUrl.startsWith('/')) {
                 segmentUrl = `${urlObj.origin}${segmentUrl}`;
             } else {
