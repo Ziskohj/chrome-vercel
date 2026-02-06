@@ -9,6 +9,8 @@ export default async function handler(req, res) {
     
     if (req.method === "OPTIONS") return res.status(200).end();
     
+    let headersSent = false;
+    
     try {
         const targetUrl = decodeURIComponent(url);
         
@@ -42,10 +44,7 @@ export default async function handler(req, res) {
         clearTimeout(timeoutId);
         
         if (!response.ok) {
-            if (!res.headersSent) {
-                return res.status(response.status).send(`Upstream error: ${response.status}`);
-            }
-            return;
+            return res.status(response.status).send(`Upstream error: ${response.status}`);
         }
         
         let contentType = response.headers.get("content-type");
@@ -62,28 +61,25 @@ export default async function handler(req, res) {
         }
         
         res.setHeader("Content-Type", contentType);
+        
         ['content-length', 'content-range', 'accept-ranges', 'cache-control'].forEach(h => {
             const val = response.headers.get(h);
             if (val) res.setHeader(h, val);
         });
-        res.status(response.status);
         
-        const reader = response.body.getReader();
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            if (res.writableEnded) break;
-            if (!res.write(value)) {
-                await new Promise(r => res.once('drain', r));
-            }
-        }
-        res.end();
+        res.status(response.status);
+        headersSent = true;
+        
+        // Usar arrayBuffer en lugar de stream reader
+        const buffer = await response.arrayBuffer();
+        res.send(Buffer.from(buffer));
         
     } catch (error) {
         console.error("❌ Proxy error:", error.message);
-        if (!res.headersSent && !res.writableEnded) {
+        
+        if (!headersSent && !res.headersSent && !res.writableEnded) {
             res.status(500).send("Proxy error: " + error.message);
-        } else {
+        } else if (!res.writableEnded) {
             res.end();
         }
     }
