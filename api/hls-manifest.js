@@ -16,6 +16,7 @@ export default async function handler(req, res) {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         };
         
+        // Referer selectivo
         if (targetUrl.includes("98sdfnjjjsi21") || targetUrl.includes("tu-proveedor-iptv")) {
             headers['Referer'] = 'http://98sdfnjjjsi21.online/';
         }
@@ -29,33 +30,36 @@ export default async function handler(req, res) {
         let manifestContent = await response.text();
         const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
         
-        // ✅ FIX: Reescribir URLs sin crear loop infinito
+        // Procesamiento inteligente línea a línea
         manifestContent = manifestContent.split('\n').map(line => {
             const trimmed = line.trim();
             
-            // Ignorar líneas vacías y comentarios
+            // Ignorar líneas vacías y metadatos (#)
             if (!trimmed || trimmed.startsWith('#')) {
                 return line;
             }
             
-            // Construir URL absoluta si es relativa
+            // Construir URL absoluta
             let segmentUrl = trimmed;
             if (!segmentUrl.startsWith('http')) {
                 segmentUrl = baseUrl + segmentUrl;
             }
             
-            // ✅ IMPORTANTE: Solo proxear si necesita headers especiales
-            // Si no, dejar URL directa (Chromecast puede acceder directamente)
+            // LOGICA CRÍTICA: ¿Necesitamos proxy para este segmento?
+            // Solo usamos proxy si el segmento viene del servidor protegido.
+            // Esto evita bucles infinitos y reduce carga.
             if (segmentUrl.includes("98sdfnjjjsi21") || segmentUrl.includes("tu-proveedor-iptv")) {
                 return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
             } else {
-                // URLs públicas accesibles directamente
+                // Si es un enlace externo (ej: intro.mp4 público), lo dejamos directo
                 return segmentUrl;
             }
         }).join('\n');
         
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-        res.setHeader("Cache-Control", "no-cache"); // HLS manifests deben ser frescos
+        // Importante: No cachear el manifest para Live TV
+        res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        
         res.status(200).send(manifestContent);
         
     } catch (error) {
