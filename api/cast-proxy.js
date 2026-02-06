@@ -15,34 +15,33 @@ export default async function handler(req, res) {
         
         // Headers base
         const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         };
         
-        // Inyectar Referer solo para proveedor específico
+        // LOGICA INTELIGENTE: Inyectar Referer solo para tu proveedor específico
         if (targetUrl.includes("98sdfnjjjsi21") || targetUrl.includes("tu-proveedor-iptv")) {
             headers['Referer'] = 'http://98sdfnjjjsi21.online/';
         }
         
-        // Soportar Range Requests (crucial para seeking)
+        // Soportar Range Requests (crucial para poder adelantar/atrasar video)
         if (req.headers.range) {
             headers['Range'] = req.headers.range;
         }
         
         const response = await fetch(targetUrl, { 
             headers,
-            redirect: 'follow' // Seguir redirecciones
+            redirect: 'follow' 
         });
         
         if (!response.ok) {
-            // ✅ FIX: Sintaxis correcta
             return res.status(response.status).send(`Upstream error: ${response.status}`);
         }
         
-        // ✅ FIX: Detección inteligente de Content-Type
+        // Detección robusta de Content-Type
         let contentType = response.headers.get("content-type");
         
-        if (!contentType) {
-            // Intentar detectar por extensión de URL
+        if (!contentType || contentType === 'application/octet-stream') {
+            // Intentar detectar por extensión de URL si el servidor no nos lo dice
             const ext = targetUrl.split('.').pop().toLowerCase().split('?')[0];
             const mimeMap = {
                 'ts': 'video/mp2t',
@@ -52,29 +51,25 @@ export default async function handler(req, res) {
                 'm3u8': 'application/vnd.apple.mpegurl',
                 'mpd': 'application/dash+xml'
             };
-            contentType = mimeMap[ext] || 'application/octet-stream';
+            contentType = mimeMap[ext] || 'video/mp2t'; // Fallback a TS si todo falla
         }
         
         res.setHeader("Content-Type", contentType);
         
         // Copiar headers críticos de streaming
-        ['content-length', 'content-range', 'accept-ranges', 'cache-control'].forEach(h => {
+        ['content-length', 'content-range', 'accept-ranges', 'cache-control', 'etag'].forEach(h => {
             const value = response.headers.get(h);
             if (value) res.setHeader(h, value);
         });
         
         res.status(response.status);
         
-        // Stream el contenido
+        // Stream eficiente usando Pipe
         const reader = response.body.getReader();
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            
-            if (!res.write(value)) {
-                // Backpressure: esperar a que el buffer se vacíe
-                await new Promise(resolve => res.once('drain', resolve));
-            }
+            res.write(value);
         }
         res.end();
         
