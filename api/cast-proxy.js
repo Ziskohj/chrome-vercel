@@ -1,81 +1,70 @@
-export const config = {
-  runtime: 'edge',
-};
-
-export default async function handler(req) {
-  const { searchParams } = new URL(req.url);
-  const url = searchParams.get('url');
-  const headersParam = searchParams.get('headers');
-  
-  if (!url) {
-    return new Response('Missing url parameter', { status: 400 });
-  }
-
-  const targetUrl = decodeURIComponent(url);
-  
-  const requestHeaders = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-  };
-  
-  if (headersParam) {
+export default async function handler(req, res) {
+    const { url } = req.query;
+    
+    if (!url) {
+        return res.status(400).send("Missing url parameter");
+    }
+    
+    // CORS
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+    
+    if (req.method === "OPTIONS") {
+        return res.status(200).end();
+    }
+    
     try {
-      const customHeaders = JSON.parse(decodeURIComponent(headersParam));
-      Object.assign(requestHeaders, customHeaders);
-      console.log('🔑 Headers:', JSON.stringify(customHeaders));
-    } catch (e) {
-      console.warn('⚠️ Headers error:', e.message);
+        const targetUrl = decodeURIComponent(url);
+        
+        // NOTA: Si quieres que funcione con OTRAS webs, quizás debas quitar este Referer
+        // o hacerlo dinámico, pero para tu IPTV déjalo así.
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        };
+        
+        if (req.headers.range) {
+            headers.Range = req.headers.range;
+        }
+        
+        const response = await fetch(targetUrl, { headers });
+        
+        if (!response.ok) {
+            return res.status(response.status).send("Upstream error");
+        }
+        
+        // --- CAMBIO IMPORTANTE AQUÍ ---
+        // En lugar de forzar video/mp2t, pasamos el tipo real (mp4, mkv, etc.)
+        const contentType = response.headers.get("content-type");
+        if (contentType) {
+             res.setHeader("Content-Type", contentType);
+        } else {
+             // Solo si no viene nada, asumimos stream
+             res.setHeader("Content-Type", "video/mp2t");
+        }
+        // ------------------------------
+        
+        if (response.headers.get("content-length")) {
+            res.setHeader("Content-Length", response.headers.get("content-length"));
+        }
+        if (response.headers.get("content-range")) {
+            res.setHeader("Content-Range", response.headers.get("content-range"));
+        }
+        if (response.headers.get("accept-ranges")) {
+            res.setHeader("Accept-Ranges", response.headers.get("accept-ranges"));
+        }
+        
+        res.status(response.status);
+        
+        const reader = response.body.getReader();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(value);
+        }
+        res.end();
+        
+    } catch (error) {
+        res.status(500).send("Proxy error: " + error.message);
     }
-  }
-  
-  const range = req.headers.get('range');
-  if (range) {
-    requestHeaders['Range'] = range;
-  }
-
-  try {
-    const response = await fetch(targetUrl, { 
-      headers: requestHeaders,
-      redirect: 'follow'
-    });
-
-    if (!response.ok) {
-      return new Response(`Upstream error: ${response.status}`, { 
-        status: response.status 
-      });
-    }
-
-    let contentType = response.headers.get('content-type');
-    if (!contentType || contentType === 'application/octet-stream') {
-      const ext = targetUrl.split('.').pop().toLowerCase().split('?')[0];
-      const mimeMap = {
-        'ts': 'video/mp2t',
-        'm3u8': 'application/vnd.apple.mpegurl',
-        'mp4': 'video/mp4',
-        'mkv': 'video/x-matroska',
-        'webm': 'video/webm'
-      };
-      contentType = mimeMap[ext] || 'video/mp2t';
-    }
-
-    const headers = new Headers({
-      'Content-Type': contentType,
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-      'Cache-Control': 'no-cache'
-    });
-
-    ['content-length', 'content-range', 'accept-ranges'].forEach(h => {
-      const val = response.headers.get(h);
-      if (val) headers.set(h, val);
-    });
-
-    return new Response(response.body, {
-      status: response.status,
-      headers
-    });
-
-  } catch (error) {
-    console.error('❌ Error:', error.message);
-    return new Response('Proxy error: ' + error.message, { status: 500 });
-  }
 }
