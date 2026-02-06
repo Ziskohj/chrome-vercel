@@ -1,6 +1,4 @@
-export const config = {
-  runtime: 'edge',
-};
+export const config = { runtime: 'edge' };
 
 export default async function handler(req) {
   const { searchParams } = new URL(req.url);
@@ -11,11 +9,10 @@ export default async function handler(req) {
     return new Response('Missing url', { status: 400 });
   }
 
-  const targetUrl = decodeURIComponent(url);
+  // ✅ FIX: No hagas decodeURIComponent aquí, ya está decodificado
+  const targetUrl = url;
   
-  const requestHeaders = {
-    'User-Agent': 'Mozilla/5.0',
-  };
+  const requestHeaders = { 'User-Agent': 'Mozilla/5.0' };
   
   if (headersParam) {
     try {
@@ -28,14 +25,16 @@ export default async function handler(req) {
     const response = await fetch(targetUrl, { headers: requestHeaders });
 
     if (!response.ok) {
-      return new Response(`Error ${response.status}`, { status: response.status });
+      return new Response(`Upstream error: ${response.status}`, { 
+        status: response.status 
+      });
     }
 
     let manifest = await response.text();
     
+    // ✅ Parsear base URL correctamente
     const urlObj = new URL(targetUrl);
-    const basePath = urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1);
-    const baseUrl = `${urlObj.origin}${basePath}`;
+    const baseUrl = `${urlObj.origin}${urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1)}`;
     
     manifest = manifest.split('\n').map(line => {
       const trimmed = line.trim();
@@ -43,18 +42,17 @@ export default async function handler(req) {
       
       let segmentUrl = trimmed;
       
+      // Convertir a absoluta
       if (!segmentUrl.startsWith('http')) {
-        if (segmentUrl.startsWith('/')) {
-          segmentUrl = `${urlObj.origin}${segmentUrl}`;
-        } else {
-          segmentUrl = baseUrl + segmentUrl;
-        }
+        segmentUrl = segmentUrl.startsWith('/') 
+          ? `${urlObj.origin}${segmentUrl}`
+          : baseUrl + segmentUrl;
       }
       
+      // Proxy
       let proxyUrl = `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
-      
       if (headersParam) {
-        proxyUrl += `&headers=${headersParam}`;
+        proxyUrl += `&headers=${encodeURIComponent(headersParam)}`;
       }
       
       return proxyUrl;
@@ -69,6 +67,6 @@ export default async function handler(req) {
     });
 
   } catch (error) {
-    return new Response(error.message, { status: 500 });
+    return new Response(`Error: ${error.message}`, { status: 500 });
   }
 }
