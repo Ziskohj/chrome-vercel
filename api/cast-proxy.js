@@ -5,10 +5,10 @@ export default async function handler(req, res) {
         return res.status(400).send("Missing url parameter");
     }
     
-    // CORS
+    // CORS: Usamos * en Headers para evitar problemas con reproductores estrictos
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "*"); 
     
     if (req.method === "OPTIONS") {
         return res.status(200).end();
@@ -17,11 +17,9 @@ export default async function handler(req, res) {
     try {
         const targetUrl = decodeURIComponent(url);
         
-        // NOTA: Si quieres que funcione con OTRAS webs, quizás debas quitar este Referer
-        // o hacerlo dinámico, pero para tu IPTV déjalo así.
         const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'http://98sdfnjjjsi21.online/' 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            // 'Referer': 'http://98sdfnjjjsi21.online/'  <-- COMENTADO PARA QUE FUNCIONE CON TODO
         };
         
         if (req.headers.range) {
@@ -34,17 +32,15 @@ export default async function handler(req, res) {
             return res.status(response.status).send("Upstream error");
         }
         
-        // --- CAMBIO IMPORTANTE AQUÍ ---
-        // En lugar de forzar video/mp2t, pasamos el tipo real (mp4, mkv, etc.)
+        // Detección automática del formato (MP4, MKV, TS, etc.)
         const contentType = response.headers.get("content-type");
         if (contentType) {
              res.setHeader("Content-Type", contentType);
         } else {
-             // Solo si no viene nada, asumimos stream
-             res.setHeader("Content-Type", "video/mp2t");
+             res.setHeader("Content-Type", "video/mp2t"); // Fallback seguro
         }
-        // ------------------------------
         
+        // Copiamos headers vitales para el streaming
         if (response.headers.get("content-length")) {
             res.setHeader("Content-Length", response.headers.get("content-length"));
         }
