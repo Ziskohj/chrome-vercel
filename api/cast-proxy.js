@@ -1,3 +1,5 @@
+import { Readable } from 'stream';
+
 export default async function handler(req, res) {
     const { url, headers: headersParam } = req.query;
     
@@ -15,7 +17,7 @@ export default async function handler(req, res) {
         const targetUrl = decodeURIComponent(url);
         
         let requestHeaders = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         };
         
         if (headersParam) {
@@ -24,7 +26,7 @@ export default async function handler(req, res) {
                 requestHeaders = { ...requestHeaders, ...customHeaders };
                 console.log("🔑 Custom headers:", JSON.stringify(customHeaders));
             } catch (e) {
-                console.warn("⚠️ Error parsing headers:", e.message);
+                console.warn("⚠️ Headers parse error:", e.message);
             }
         }
         
@@ -33,7 +35,7 @@ export default async function handler(req, res) {
         }
         
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 15000);
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
         
         const response = await fetch(targetUrl, { 
             headers: requestHeaders,
@@ -47,6 +49,7 @@ export default async function handler(req, res) {
             return res.status(response.status).send(`Upstream error: ${response.status}`);
         }
         
+        // Determinar Content-Type
         let contentType = response.headers.get("content-type");
         if (!contentType || contentType === 'application/octet-stream') {
             const ext = targetUrl.split('.').pop().toLowerCase().split('?')[0];
@@ -60,9 +63,11 @@ export default async function handler(req, res) {
             contentType = mimeMap[ext] || 'video/mp2t';
         }
         
+        // Copiar headers importantes
         res.setHeader("Content-Type", contentType);
         
-        ['content-length', 'content-range', 'accept-ranges', 'cache-control'].forEach(h => {
+        const headersToProxy = ['content-length', 'content-range', 'accept-ranges', 'cache-control'];
+        headersToProxy.forEach(h => {
             const val = response.headers.get(h);
             if (val) res.setHeader(h, val);
         });
@@ -70,9 +75,24 @@ export default async function handler(req, res) {
         res.status(response.status);
         headersSent = true;
         
-        // Usar arrayBuffer en lugar de stream reader
-        const buffer = await response.arrayBuffer();
-        res.send(Buffer.from(buffer));
+        // ✅ STREAMING CON NODEJS STREAM API (Compatible con Vercel)
+        if (response.body) {
+            const nodeStream = Readable.fromWeb(response.body);
+            
+            nodeStream.on('error', (err) => {
+                console.error("❌ Stream error:", err.message);
+                if (!res.writableEnded) res.end();
+            });
+            
+            req.on('close', () => {
+                nodeStream.destroy();
+            });
+            
+            nodeStream.pipe(res);
+        } else {
+            // Fallback si no hay body
+            res.end();
+        }
         
     } catch (error) {
         console.error("❌ Proxy error:", error.message);
