@@ -10,38 +10,44 @@ export default async function handler(req, res) {
     
     if (req.method === "OPTIONS") return res.status(200).end();
     
+    // ⭐ FLAG para rastrear si ya enviamos headers
+    let headersSent = false;
+    
     try {
         const targetUrl = decodeURIComponent(url);
         
-        // Headers base
+        console.log("🎥 Proxying:", targetUrl.substring(0, 100) + "...");
+        
         const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         };
         
-        // LOGICA INTELIGENTE: Inyectar Referer solo para tu proveedor específico
         if (targetUrl.includes("98sdfnjjjsi21") || targetUrl.includes("tu-proveedor-iptv")) {
             headers['Referer'] = 'http://98sdfnjjjsi21.online/';
         }
         
-        // Soportar Range Requests (crucial para poder adelantar/atrasar video)
         if (req.headers.range) {
             headers['Range'] = req.headers.range;
         }
         
         const response = await fetch(targetUrl, { 
             headers,
-            redirect: 'follow' 
+            redirect: 'follow'
         });
         
         if (!response.ok) {
-            return res.status(response.status).send(`Upstream error: ${response.status}`);
+            console.error("❌ Upstream error:", response.status);
+            // ⭐ Solo enviar error si no hemos empezado a streamear
+            if (!headersSent) {
+                return res.status(response.status).send(`Upstream error: ${response.status}`);
+            }
+            return;
         }
         
-        // Detección robusta de Content-Type
+        // Detectar Content-Type
         let contentType = response.headers.get("content-type");
         
-        if (!contentType || contentType === 'application/octet-stream') {
-            // Intentar detectar por extensión de URL si el servidor no nos lo dice
+        if (!contentType) {
             const ext = targetUrl.split('.').pop().toLowerCase().split('?')[0];
             const mimeMap = {
                 'ts': 'video/mp2t',
@@ -51,30 +57,60 @@ export default async function handler(req, res) {
                 'm3u8': 'application/vnd.apple.mpegurl',
                 'mpd': 'application/dash+xml'
             };
-            contentType = mimeMap[ext] || 'video/mp2t'; // Fallback a TS si todo falla
+            contentType = mimeMap[ext] || 'application/octet-stream';
         }
         
+        console.log("📦 Content-Type:", contentType);
+        
+        // ⭐ ENVIAR HEADERS UNA SOLA VEZ
         res.setHeader("Content-Type", contentType);
         
-        // Copiar headers críticos de streaming
-        ['content-length', 'content-range', 'accept-ranges', 'cache-control', 'etag'].forEach(h => {
+        ['content-length', 'content-range', 'accept-ranges', 'cache-control'].forEach(h => {
             const value = response.headers.get(h);
-            if (value) res.setHeader(h, value);
+            if (value) {
+                res.setHeader(h, value);
+            }
         });
         
         res.status(response.status);
+        headersSent = true; // ⭐ MARCAR QUE YA ENVIAMOS HEADERS
         
-        // Stream eficiente usando Pipe
+        // Streaming
         const reader = response.body.getReader();
+        let bytesStreamed = 0;
+        
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
-            res.write(value);
+            
+            if (done) {
+                console.log(`✅ Completed: ${bytesStreamed} bytes`);
+                break;
+            }
+            
+            bytesStreamed += value.length;
+            
+            // ⭐ Verificar si la conexión del cliente sigue viva
+            if (res.writableEnded) {
+                console.log("⚠️ Client disconnected, stopping stream");
+                break;
+            }
+            
+            if (!res.write(value)) {
+                await new Promise(resolve => res.once('drain', resolve));
+            }
         }
+        
         res.end();
         
     } catch (error) {
-        console.error("Proxy error:", error);
-        res.status(500).send("Proxy error: " + error.message);
+        console.error("❌ Proxy error:", error.message);
+        
+        // ⭐ SOLO ENVIAR ERROR SI NO HEMOS ENVIADO HEADERS
+        if (!headersSent && !res.writableEnded) {
+            res.status(500).send("Proxy error: " + error.message);
+        } else {
+            // Si ya empezamos a streamear, solo cerramos
+            res.end();
+        }
     }
 }
