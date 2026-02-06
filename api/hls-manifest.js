@@ -1,72 +1,62 @@
-export const config = { runtime: 'edge' };
-
-export default async function handler(req) {
-  const { searchParams } = new URL(req.url);
-  const url = searchParams.get('url');
-  const headersParam = searchParams.get('headers');
-  
-  if (!url) {
-    return new Response('Missing url', { status: 400 });
-  }
-
-  // ✅ FIX: No hagas decodeURIComponent aquí, ya está decodificado
-  const targetUrl = url;
-  
-  const requestHeaders = { 'User-Agent': 'Mozilla/5.0' };
-  
-  if (headersParam) {
-    try {
-      const custom = JSON.parse(decodeURIComponent(headersParam));
-      Object.assign(requestHeaders, custom);
-    } catch (e) {}
-  }
-
-  try {
-    const response = await fetch(targetUrl, { headers: requestHeaders });
-
-    if (!response.ok) {
-      return new Response(`Upstream error: ${response.status}`, { 
-        status: response.status 
-      });
+export default async function handler(req, res) {
+    const { url } = req.query;
+    
+    if (!url) {
+        return res.status(400).send("Missing url parameter");
     }
-
-    let manifest = await response.text();
     
-    // ✅ Parsear base URL correctamente
-    const urlObj = new URL(targetUrl);
-    const baseUrl = `${urlObj.origin}${urlObj.pathname.substring(0, urlObj.pathname.lastIndexOf('/') + 1)}`;
+    // CORS
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "*");
     
-    manifest = manifest.split('\n').map(line => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) return line;
-      
-      let segmentUrl = trimmed;
-      
-      // Convertir a absoluta
-      if (!segmentUrl.startsWith('http')) {
-        segmentUrl = segmentUrl.startsWith('/') 
-          ? `${urlObj.origin}${segmentUrl}`
-          : baseUrl + segmentUrl;
-      }
-      
-      // Proxy
-      let proxyUrl = `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
-      if (headersParam) {
-        proxyUrl += `&headers=${encodeURIComponent(headersParam)}`;
-      }
-      
-      return proxyUrl;
-    }).join('\n');
+    if (req.method === "OPTIONS") {
+        return res.status(200).end();
+    }
     
-    return new Response(manifest, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/vnd.apple.mpegurl',
-        'Access-Control-Allow-Origin': '*',
-      }
-    });
-
-  } catch (error) {
-    return new Response(`Error: ${error.message}`, { status: 500 });
-  }
+    try {
+        const targetUrl = decodeURIComponent(url);
+        
+        // --- CAMBIO IMPORTANTE: Eliminado el replace .ts -> .m3u8 ---
+        // Usamos la URL tal cual nos la envía la app.
+        const m3u8Url = targetUrl; 
+        
+        const response = await fetch(m3u8Url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', // User agent más completo
+                'Referer': 'http://98sdfnjjjsi21.online/'
+            }
+        });
+        
+        if (!response.ok) {
+            return res.status(response.status).send("Failed to fetch manifest");
+        }
+        
+        let manifestContent = await response.text();
+        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
+        
+        manifestContent = manifestContent.split('\n').map(line => {
+            // Ignoramos comentarios y líneas vacías
+            if (line && !line.startsWith('#')) {
+                let segmentUrl = line.trim();
+                
+                // Si la URL del segmento es relativa, la hacemos absoluta
+                if (!segmentUrl.startsWith('http')) {
+                    segmentUrl = baseUrl + segmentUrl;
+                }
+                
+                // Redirigimos cada trocito de video (ts) a nuestro otro proxy
+                // Asegúrate de que esta URL coincida EXACTAMENTE con la tuya
+                return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
+            }
+            return line;
+        }).join('\n');
+        
+        // Tipo correcto para HLS
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl"); // O application/x-mpegurl
+        res.status(200).send(manifestContent);
+        
+    } catch (error) {
+        res.status(500).send("Manifest error: " + error.message);
+    }
 }
