@@ -1,12 +1,11 @@
 export default async function handler(req, res) {
-    // 1. Leemos también el parámetro 'headers' que envía Swift
-    const { url, headers: customHeaders } = req.query;
+    const { url } = req.query;
     
     if (!url) {
         return res.status(400).send("Missing url parameter");
     }
     
-    // CORS (Vital para Chromecast)
+    // CORS
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Range, Content-Type");
@@ -18,47 +17,33 @@ export default async function handler(req, res) {
     try {
         const targetUrl = decodeURIComponent(url);
         
-        // 2. Preparamos las cabeceras por defecto
-        let fetchHeaders = {
+        // NOTA: Si quieres que funcione con OTRAS webs, quizás debas quitar este Referer
+        // o hacerlo dinámico, pero para tu IPTV déjalo así.
+        const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         };
-
-        // 3. 🔥 MAGIA AQUÍ: Inyectamos las cabeceras que vienen de la App (Swift)
-        // Esto permite que el User-Agent sea "IPTVSmartersPlayer" cuando lo pide la app.
-        if (customHeaders) {
-            try {
-                const parsedHeaders = JSON.parse(customHeaders);
-                fetchHeaders = { ...fetchHeaders, ...parsedHeaders };
-            } catch (e) {
-                console.error("Error parsing custom headers:", e);
-            }
-        }
         
-        // Pasamos el rango si el Chromecast lo pide (seek)
         if (req.headers.range) {
-            fetchHeaders.Range = req.headers.range;
+            headers.Range = req.headers.range;
         }
         
-        const response = await fetch(targetUrl, { headers: fetchHeaders });
+        const response = await fetch(targetUrl, { headers });
         
         if (!response.ok) {
             return res.status(response.status).send("Upstream error");
         }
         
-        // 4. Gestión del Content-Type
+        // --- CAMBIO IMPORTANTE AQUÍ ---
+        // En lugar de forzar video/mp2t, pasamos el tipo real (mp4, mkv, etc.)
         const contentType = response.headers.get("content-type");
         if (contentType) {
              res.setHeader("Content-Type", contentType);
         } else {
-             // Si el servidor original no dice qué es, miramos la extensión
-             if (targetUrl.includes('.m3u8')) {
-                 res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-             } else {
-                 res.setHeader("Content-Type", "video/mp2t");
-             }
+             // Solo si no viene nada, asumimos stream
+             res.setHeader("Content-Type", "video/mp2t");
         }
+        // ------------------------------
         
-        // Copiamos cabeceras útiles
         if (response.headers.get("content-length")) {
             res.setHeader("Content-Length", response.headers.get("content-length"));
         }
@@ -71,7 +56,6 @@ export default async function handler(req, res) {
         
         res.status(response.status);
         
-        // Streaming de datos (Pipe)
         const reader = response.body.getReader();
         while (true) {
             const { done, value } = await reader.read();
@@ -81,7 +65,6 @@ export default async function handler(req, res) {
         res.end();
         
     } catch (error) {
-        console.error(error);
         res.status(500).send("Proxy error: " + error.message);
     }
-}
+} 
