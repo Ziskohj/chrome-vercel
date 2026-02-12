@@ -1,57 +1,110 @@
+export const config = {
+  api: {
+    bodyParser: false,
+    responseLimit: false,
+    externalResolver: true,
+  },
+};
+
 export default async function handler(req, res) {
-    const { url, headers: headersParam } = req.query;
-    
-    if (!url) {
-        return res.status(400).send("Missing url parameter");
+  const { url, headers: headersParam } = req.query;
+
+  if (!url) {
+    return res.status(400).send("Missing url parameter");
+  }
+
+  // CORS robusto para Chromecast
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "*");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length");
+
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  try {
+    const targetUrl = decodeURIComponent(url);
+
+    // Parsear headers custom enviados desde Swift
+    let customHeaders = {};
+    if (headersParam) {
+      try {
+        customHeaders = JSON.parse(decodeURIComponent(headersParam));
+      } catch {}
     }
-    
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "*");
-    
-    if (req.method === "OPTIONS") {
-        return res.status(200).end();
+
+    const upstream = await fetch(targetUrl, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        ...customHeaders,
+      },
+      redirect: "follow",
+    });
+
+    if (!upstream.ok) {
+      return res
+        .status(upstream.status)
+        .send("Failed to fetch manifest");
     }
-    
-    try {
-        const targetUrl = decodeURIComponent(url);
-        const m3u8Url = targetUrl;
-        
-        // ✅ Parsear headers custom enviados por la app
-        let customHeaders = {};
-        if (headersParam) {
-            try { customHeaders = JSON.parse(decodeURIComponent(headersParam)); } catch(e) {}
+
+    let manifest = await upstream.text();
+    const baseUrl =
+      targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
+
+    const proxyBase = "https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=";
+
+    manifest = manifest
+      .split("\n")
+      .map((line) => {
+        const trimmed = line.trim();
+
+        if (!trimmed) return line;
+
+        // 🔐 EXT-X-KEY (DRM keys)
+        if (trimmed.startsWith("#EXT-X-KEY")) {
+          return line.replace(/URI="([^"]+)"/, (match, uri) => {
+            const absolute =
+              uri.startsWith("http") ? uri : baseUrl + uri;
+            return `URI="${proxyBase}${encodeURIComponent(
+              absolute
+            )}"`;
+          });
         }
-        
-        const response = await fetch(m3u8Url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                ...customHeaders
-            }
-        });
-        
-        if (!response.ok) {
-            return res.status(response.status).send("Failed to fetch manifest");
+
+        // 🧱 EXT-X-MAP (init segments)
+        if (trimmed.startsWith("#EXT-X-MAP")) {
+          return line.replace(/URI="([^"]+)"/, (match, uri) => {
+            const absolute =
+              uri.startsWith("http") ? uri : baseUrl + uri;
+            return `URI="${proxyBase}${encodeURIComponent(
+              absolute
+            )}"`;
+          });
         }
-        
-        let manifestContent = await response.text();
-        const baseUrl = m3u8Url.substring(0, m3u8Url.lastIndexOf('/') + 1);
-        
-        manifestContent = manifestContent.split('\n').map(line => {
-            if (line && !line.startsWith('#')) {
-                let segmentUrl = line.trim();
-                if (!segmentUrl.startsWith('http')) {
-                    segmentUrl = baseUrl + segmentUrl;
-                }
-                return `https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=${encodeURIComponent(segmentUrl)}`;
-            }
-            return line;
-        }).join('\n');
-        
-        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-        res.status(200).send(manifestContent);
-        
-    } catch (error) {
-        res.status(500).send("Manifest error: " + error.message);
-    }
+
+        // 📦 Segmentos normales
+        if (!trimmed.startsWith("#")) {
+          const absolute =
+            trimmed.startsWith("http")
+              ? trimmed
+              : baseUrl + trimmed;
+
+          return `${proxyBase}${encodeURIComponent(absolute)}`;
+        }
+
+        return line;
+      })
+      .join("\n");
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.apple.mpegurl"
+    );
+
+    return res.status(200).send(manifest);
+  } catch (error) {
+    return res.status(500).send("Manifest error");
+  }
 }
