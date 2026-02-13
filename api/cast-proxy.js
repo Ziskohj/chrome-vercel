@@ -12,72 +12,44 @@ export const config = {
   },
 };
 
-const ALLOWED_PROTOCOLS = ["http:", "https:"];
+const PROXY_BASE =
+  "https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=";
+
+const MAX_RETRIES = 3;
+const INITIAL_TIMEOUT = 60000;
 
 function isValidUrl(url) {
   try {
     const parsed = new URL(url);
-    return ALLOWED_PROTOCOLS.includes(parsed.protocol);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return false;
   }
 }
 
-export default async function handler(req, res) {
-  const { url, headers: customHeadersParam } = req.query;
+function detectMime(ext) {
+  const map = {
+    mp4: "video/mp4",
+    mkv: "video/x-matroska",
+    m3u8: "application/vnd.apple.mpegurl",
+    ts: "video/mp2t",
+    mov: "video/quicktime",
+    avi: "video/x-msvideo",
+    mpd: "application/dash+xml",
+    webm: "video/webm",
+  };
+  return map[ext] || "video/mp4";
+}
 
-  if (!url) {
-    return res.status(400).send("Missing url parameter");
-  }
-
-  const decodedUrl = decodeURIComponent(url);
-
-  if (!isValidUrl(decodedUrl)) {
-    return res.status(400).send("Invalid URL");
-  }
-
-  // 🔥 CORS Chromecast-safe
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Range, Content-Type, Accept, User-Agent, Referer"
+async function fetchWithRetry(url, headers, attempt = 1) {
+  const controller = new AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    INITIAL_TIMEOUT
   );
-  res.setHeader(
-    "Access-Control-Expose-Headers",
-    "Content-Range, Content-Length, Accept-Ranges"
-  );
-
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
 
   try {
-    // 🔹 Headers dinámicos opcionales (Referer etc)
-    let dynamicHeaders = {};
-    if (customHeadersParam) {
-      try {
-        dynamicHeaders = JSON.parse(decodeURIComponent(customHeadersParam));
-      } catch {}
-    }
-
-    const headers = {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
-      Accept: "*/*",
-      Connection: "keep-alive",
-      ...dynamicHeaders,
-    };
-
-    if (req.headers.range) {
-      headers["Range"] = req.headers.range;
-    }
-
-    // 🔹 Timeout conexión inicial (30s)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
-    const upstream = await fetch(decodedUrl, {
+    const response = await fetch(url, {
       headers,
       redirect: "follow",
       signal: controller.signal,
@@ -85,77 +57,135 @@ export default async function handler(req, res) {
 
     clearTimeout(timeout);
 
-    if (!upstream.ok && upstream.status !== 206) {
-      return res
-        .status(upstream.status)
-        .send(`Upstream error: ${upstream.statusText}`);
+    if (!response.ok && response.status !== 206) {
+      throw new Error("Upstream error");
     }
+
+    return response;
+  } catch (err) {
+    clearTimeout(timeout);
+
+    if (attempt < MAX_RETRIES) {
+      return fetchWithRetry(url, headers, attempt + 1);
+    }
+
+    throw err;
+  }
+}
+
+export default async function handler(req, res) {
+  const { url } = req.query;
+
+  if (!url) return res.status(400).send("Missing url");
+
+  const decodedUrl = decodeURIComponent(url);
+
+  if (!isValidUrl(decodedUrl))
+    return res.status(400).send("Invalid URL");
+
+  // 🔥 Chromecast CORS Safe
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Range, Content-Type, Accept"
+  );
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "Content-Range, Content-Length, Accept-Ranges"
+  );
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+
+  try {
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120",
+      Accept: "*/*",
+      Connection: "keep-alive",
+    };
+
+    if (req.headers.range) {
+      headers["Range"] = req.headers.range;
+    }
+
+    const upstream = await fetchWithRetry(decodedUrl, headers);
 
     const cleanUrl = decodedUrl.split("?")[0];
     const ext = cleanUrl.split(".").pop().toLowerCase();
-
-    const mimeMap = {
-      mp4: "video/mp4",
-      mkv: "video/x-matroska",
-      m3u8: "application/vnd.apple.mpegurl",
-      ts: "video/mp2t",
-      mov: "video/quicktime",
-      avi: "video/x-msvideo",
-      mpd: "application/dash+xml",
-    };
 
     let contentType = upstream.headers.get("content-type");
 
     if (
       !contentType ||
-      contentType === "application/octet-stream" ||
+      contentType.includes("octet-stream") ||
       contentType.includes("text/plain")
     ) {
-      contentType = mimeMap[ext] || "video/mp4";
+      contentType = detectMime(ext);
     }
 
-    // 🔹 HEAD probe (Chromecast lo usa constantemente)
+    if (ext === "ts") contentType = "video/mp2t";
+
+    // 🔥 HEAD probe
     if (req.method === "HEAD") {
       res.setHeader("Content-Type", contentType);
       res.setHeader("Accept-Ranges", "bytes");
-
       if (upstream.headers.get("content-length")) {
         res.setHeader(
           "Content-Length",
           upstream.headers.get("content-length")
         );
       }
-
       return res.status(upstream.status).end();
     }
 
-    // 🔥 HLS Rewrite CORREGIDO
+    // 🔥 HLS Rewrite ABSOLUTO con soporte KEY
     if (ext === "m3u8" || contentType.includes("mpegurl")) {
       const text = await upstream.text();
       const baseUrl =
         decodedUrl.substring(0, decodedUrl.lastIndexOf("/") + 1);
 
-      const rewritten = text.replace(/^(?!#)(.+)$/gm, (line) => {
-        const absoluteUrl = line.startsWith("http")
-          ? line
-          : baseUrl + line;
+      const rewritten = text
+        .split("\n")
+        .map((line) => {
+          const trimmed = line.trim();
+          if (!trimmed) return line;
 
-        return `/api/cast-proxy?url=${encodeURIComponent(
-          absoluteUrl
-        )}`;
-      });
+          if (trimmed.startsWith("#EXT-X-KEY")) {
+            return line.replace(/URI="([^"]+)"/, (_, uri) => {
+              const absolute = uri.startsWith("http")
+                ? uri
+                : baseUrl + uri;
+              return `URI="${PROXY_BASE}${encodeURIComponent(
+                absolute
+              )}"`;
+            });
+          }
+
+          if (!trimmed.startsWith("#")) {
+            const absolute = trimmed.startsWith("http")
+              ? trimmed
+              : baseUrl + trimmed;
+            return `${PROXY_BASE}${encodeURIComponent(absolute)}`;
+          }
+
+          return line;
+        })
+        .join("\n");
 
       res.setHeader(
         "Content-Type",
         "application/vnd.apple.mpegurl"
       );
+      res.setHeader("Cache-Control", "no-store");
 
       return res.status(200).send(rewritten);
     }
 
-    // 🔹 Streaming normal (MP4/MKV/TS/etc)
+    // 🔥 Streaming normal robusto
     res.setHeader("Content-Type", contentType);
     res.setHeader("Accept-Ranges", "bytes");
+    res.setHeader("Cache-Control", "no-store");
 
     if (upstream.headers.get("content-length")) {
       res.setHeader(
