@@ -51,7 +51,7 @@ async function fetchWithRetry(url, headers, attempt = 1) {
   try {
     const response = await fetch(url, {
       headers,
-      redirect: "follow",
+      redirect: "follow", // 🔥 seguimos el 302 INTERNAMENTE
       signal: controller.signal,
     });
 
@@ -111,7 +111,10 @@ export default async function handler(req, res) {
 
     const upstream = await fetchWithRetry(decodedUrl, headers);
 
-    const cleanUrl = decodedUrl.split("?")[0];
+    // 🔥 URL FINAL REAL (después del 302)
+    const finalUrl = upstream.url;
+
+    const cleanUrl = finalUrl.split("?")[0];
     const ext = cleanUrl.split(".").pop().toLowerCase();
 
     let contentType = upstream.headers.get("content-type");
@@ -139,11 +142,12 @@ export default async function handler(req, res) {
       return res.status(upstream.status).end();
     }
 
-    // 🔥 HLS Rewrite ABSOLUTO con soporte KEY
+    // 🔥 HLS Rewrite con URL FINAL REAL
     if (ext === "m3u8" || contentType.includes("mpegurl")) {
       const text = await upstream.text();
+
       const baseUrl =
-        decodedUrl.substring(0, decodedUrl.lastIndexOf("/") + 1);
+        finalUrl.substring(0, finalUrl.lastIndexOf("/") + 1);
 
       const rewritten = text
         .split("\n")
@@ -156,6 +160,7 @@ export default async function handler(req, res) {
               const absolute = uri.startsWith("http")
                 ? uri
                 : baseUrl + uri;
+
               return `URI="${PROXY_BASE}${encodeURIComponent(
                 absolute
               )}"`;
@@ -166,6 +171,7 @@ export default async function handler(req, res) {
             const absolute = trimmed.startsWith("http")
               ? trimmed
               : baseUrl + trimmed;
+
             return `${PROXY_BASE}${encodeURIComponent(absolute)}`;
           }
 
