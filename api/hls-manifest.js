@@ -9,23 +9,38 @@ export const config = {
 const PROXY_BASE =
   "https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=";
 
+/*
+  PRINCIPIOS NUEVOS:
+  - Manifest SIEMPRE reescrito absoluto
+  - Soporte KEY / MAP / BYTERANGE
+  - Mantener query params (CRÍTICO Chromecast)
+  - No decisiones de mime
+*/
+
+function abs(base: string, value: string) {
+  if (!value) return value;
+  if (value.startsWith("http")) return value;
+  return base + value;
+}
+
 export default async function handler(req, res) {
   const { url, headers: headersParam } = req.query;
 
-  if (!url) return res.status(400).send("Missing url parameter");
+  if (!url) return res.status(400).send("Missing url");
 
-  // 🔥 CORS Chromecast SAFE
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Accept-Ranges");
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "Content-Length, Accept-Ranges, Content-Range"
+  );
 
   if (req.method === "OPTIONS") return res.status(200).end();
 
   try {
     const targetUrl = decodeURIComponent(url);
 
-    // headers opcionales desde Swift
     let customHeaders = {};
     if (headersParam) {
       try {
@@ -35,8 +50,7 @@ export default async function handler(req, res) {
 
     const upstream = await fetch(targetUrl, {
       headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120",
+        "User-Agent": "Mozilla/5.0 ChromecastManifest",
         Accept: "*/*",
         Connection: "keep-alive",
         ...customHeaders,
@@ -53,35 +67,37 @@ export default async function handler(req, res) {
     const baseUrl =
       targetUrl.substring(0, targetUrl.lastIndexOf("/") + 1);
 
-    // 🔥 rewrite completo Chromecast safe
+    /*
+      🔥 REWRITE UNIVERSAL
+      - KEY
+      - MAP
+      - IFRAME playlists
+      - Segments
+    */
+
     manifest = manifest
       .split("\n")
       .map((line) => {
-        const trimmed = line.trim();
-        if (!trimmed) return line;
+        const t = line.trim();
+        if (!t) return line;
 
-        // KEY
-        if (trimmed.startsWith("#EXT-X-KEY")) {
-          return line.replace(/URI="([^"]+)"/, (_, uri) => {
-            const absolute =
-              uri.startsWith("http") ? uri : baseUrl + uri;
+        // URI attributes (KEY, MAP, IFRAME etc)
+        if (t.includes('URI="')) {
+          return line.replace(/URI="([^"]+)"/g, (_, uri) => {
+            const absolute = abs(baseUrl, uri);
             return `URI="${PROXY_BASE}${encodeURIComponent(absolute)}"`;
           });
         }
 
-        // MAP (init segment)
-        if (trimmed.startsWith("#EXT-X-MAP")) {
-          return line.replace(/URI="([^"]+)"/, (_, uri) => {
-            const absolute =
-              uri.startsWith("http") ? uri : baseUrl + uri;
-            return `URI="${PROXY_BASE}${encodeURIComponent(absolute)}"`;
-          });
+        // Variant playlist (.m3u8 inside .m3u8)
+        if (!t.startsWith("#") && t.includes(".m3u8")) {
+          const absolute = abs(baseUrl, t);
+          return `${PROXY_BASE}${encodeURIComponent(absolute)}`;
         }
 
-        // segment
-        if (!trimmed.startsWith("#")) {
-          const absolute =
-            trimmed.startsWith("http") ? trimmed : baseUrl + trimmed;
+        // Segments (.ts .m4s etc)
+        if (!t.startsWith("#")) {
+          const absolute = abs(baseUrl, t);
           return `${PROXY_BASE}${encodeURIComponent(absolute)}`;
         }
 
@@ -89,7 +105,6 @@ export default async function handler(req, res) {
       })
       .join("\n");
 
-    // 🔥 headers CRÍTICOS Chromecast
     res.setHeader("Content-Type", "application/x-mpegURL");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("Accept-Ranges", "bytes");
