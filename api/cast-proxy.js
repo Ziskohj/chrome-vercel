@@ -15,13 +15,6 @@ export const config = {
 const PROXY_BASE =
   "https://chrome-vercel-nu.vercel.app/api/cast-proxy?url=";
 
-/*
-   PRINCIPIO:
-   - NO detectar mime
-   - NO decidir nada
-   - SOLO reenviar
-*/
-
 function isValidUrl(url: string) {
   try {
     const u = new URL(url);
@@ -42,7 +35,7 @@ export default async function handler(req, res) {
     return res.status(400).send("Invalid URL");
   }
 
-  /* CORS Chromecast */
+  /* CORS Chromecast SAFE */
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "*");
@@ -56,7 +49,6 @@ export default async function handler(req, res) {
   }
 
   try {
-    /* PASSTHROUGH HEADERS */
     const headers: any = {
       "User-Agent": "Mozilla/5.0 ChromecastProxy",
       Accept: "*/*",
@@ -93,12 +85,11 @@ export default async function handler(req, res) {
 
     const cleanUrl = decoded.split("?")[0];
     const ext = cleanUrl.split(".").pop()?.toLowerCase();
+    const contentType = upstream.headers.get("content-type") || "";
 
     /* ================================
-       HLS REWRITE (UNIVERSAL)
+       HLS REWRITE — Chromecast SAFE
     ================================= */
-
-    const contentType = upstream.headers.get("content-type") || "";
 
     if (ext === "m3u8" || contentType.includes("mpegurl")) {
       const text = await upstream.text();
@@ -112,7 +103,7 @@ export default async function handler(req, res) {
           const trimmed = line.trim();
           if (!trimmed) return line;
 
-          /* KEY */
+          /* KEY + MAP */
           if (trimmed.includes("URI=")) {
             return line.replace(/URI="([^"]+)"/, (_, uri) => {
               const absolute =
@@ -135,17 +126,16 @@ export default async function handler(req, res) {
         })
         .join("\n");
 
-      res.setHeader(
-        "Content-Type",
-        "application/vnd.apple.mpegurl"
-      );
+      /* CRÍTICO Chromecast */
+      res.setHeader("Content-Type", "application/x-mpegURL");
       res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Accept-Ranges", "bytes");
 
       return res.status(200).send(rewritten);
     }
 
     /* ================================
-       STREAM PASSTHROUGH (DUMB)
+       STREAM PASSTHROUGH REAL (DUMB)
     ================================= */
 
     res.setHeader(
